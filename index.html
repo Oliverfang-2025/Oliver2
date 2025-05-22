@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Particle Morphing Shapes</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            color: #fff;
+            font-family: Arial, sans-serif;
+        }
+
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            z-index: 100;
+            display: block;
+            font-size: 1.2em;
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            z-index: 100;
+        }
+
+        #controls button,
+        #colorButtons button {
+            background-color: #333;
+            color: white;
+            border: 1px solid #555;
+            padding: 10px 15px;
+            margin: 5px;
+            cursor: pointer;
+            border-radius: 5px;
+            font-size: 0.9em;
+        }
+
+        #controls button:hover,
+        #colorButtons button:hover {
+            background-color: #555;
+        }
+
+        #colorButtons button.active {
+            background-color: #007bff;
+            border-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">Shape: Sphere (Click canvas or button to morph)</div>
+    <div id="controls">
+        <button id="changeShapeButton">Next Shape</button>
+        <div id="colorButtons">
+            <button data-palette="chinese_red">Chinese Red</button>
+            <button data-palette="klein_blue">Klein Blue</button>
+            <button data-palette="custom_tri_color">Red/Blue/Yellow Mix</button>
+            <button data-palette="rainbow" class="active">Rainbow</button>
+        </div>
+    </div>
+
+    <script src="js/libs/three.min.js"></script>
+    <script src="js/libs/OrbitControls.js"></script>
+    <script>
+        // Ensure OrbitControls is loaded (it's part of three.min.js in r128 but needs to be accessed via THREE)
+        // If using an older version or modular import, you might need a separate OrbitControls.js import.
+
+        let scene, camera, renderer, particles, controls;
+        let currentShapeIndex = 0;
+        const shapes = [];
+        const shapeNames = ['Sphere', 'Cube', 'Torus', 'Pyramid', 'Cylinder', 'Car', 'Cone', 'Helix', 'Capsule', '3D Heart', '3D Star', 'Torus Knot', 'Dodecahedron', 'Icosahedron', 'Plane', 'Octahedron'];
+        let visitedShapesIndices = []; // 新增：用于记录已访问的形状索引
+        const particleCount = 50000;
+        const morphDuration = 120; // frames for morphing
+        let morphProgress = 0;
+        let isMorphing = false;
+        let sourcePositions, targetPositions;
+        let sourceColors, targetColors; // 新增：用于存储起始和目标颜色
+        let currentPalette = 'rainbow';
+        let isDragging = false; // 新增：用于判断是否正在拖拽
+
+        // User requested colors
+        const chineseRed = new THREE.Color(0xCD0000);
+        const kleinBlue = new THREE.Color(0x002FA7);
+        const matchingYellow = new THREE.Color(0xFFD700); // Gold/bright yellow
+
+        // 新增：颜色常量对象，方便传递
+        const colorConstants = {
+            chineseRed: chineseRed,
+            kleinBlue: kleinBlue,
+            matchingYellow: matchingYellow
+        };
+
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // OrbitControls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false;
+            controls.minDistance = 2;
+            controls.maxDistance = 15;
+
+            // Generate positions for all shapes - Adjusted scales for better size consistency
+            shapes.push(getSpherePositions(particleCount, 1.8)); // Sphere
+            shapes.push(getCubePositions(particleCount, 2.2));    // Cube
+            shapes.push(getTorusPositions(particleCount, 1.4, 0.5, 32, 32)); // Torus
+            shapes.push(getPyramidPositions(particleCount, 2.0, 2.0));   // Pyramid
+            shapes.push(getCylinderPositions(particleCount, 1.2, 2.8)); // Cylinder
+            shapes.push(getCarPositions(particleCount, 0.7));        // Car (Sportier)
+            shapes.push(getConePositions(particleCount, 1.3, 2.8));    // Cone
+            shapes.push(getHelixPositions(particleCount, 1.2, 2.5, 3, 0.55)); // Helix - increased coil thickness
+            shapes.push(getCapsulePositions(particleCount, 0.8, 2.8));  // Capsule
+            shapes.push(getHeart3DPositions(particleCount, 0.9));     // 3D Heart (thicker & rescaled)
+            shapes.push(getStar3DPositions(particleCount, 1.8, 5, 1.2)); // 3D Star - increased Z thicknessFactor
+            shapes.push(getTorusKnotPositions(particleCount, 1.2, 0.4, 64, 16, 2, 3)); // Torus Knot
+            shapes.push(getDodecahedronPositions(particleCount, 1.6)); // Dodecahedron
+            shapes.push(getIcosahedronPositions(particleCount, 1.6));  // Icosahedron
+            shapes.push(getPlanePositions(particleCount, 2.5, 2.5));   // Plane
+            shapes.push(getOctahedronPositions(particleCount, 1.6)); // Octahedron
+
+            // Create particle system
+            const particlesGeometry = new THREE.BufferGeometry();
+            
+            // Initial shape selection (random)
+            if (shapes.length > 0) {
+                let initialShapeCandidates = [];
+                for (let i = 0; i < shapes.length; i++) initialShapeCandidates.push(i);
+                currentShapeIndex = initialShapeCandidates[Math.floor(Math.random() * initialShapeCandidates.length)];
+                visitedShapesIndices.push(currentShapeIndex);
+            }
+            const initialPositions = shapes[currentShapeIndex] ? shapes[currentShapeIndex].slice() : new Float32Array(particleCount * 3);
+
+            particlesGeometry.setAttribute('position', new THREE.BufferAttribute(initialPositions, 3));
+
+            const colors = new Float32Array(particleCount * 3);
+            particlesGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+            const particleMaterial = new THREE.PointsMaterial({
+                size: 0.03,
+                vertexColors: true,
+                sizeAttenuation: true
+            });
+
+            particles = new THREE.Points(particlesGeometry, particleMaterial);
+            scene.add(particles);
+
+            applyColorPalette(currentPalette); // Apply initial color
+            updateInfoText();
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize, false);
+            document.getElementById('changeShapeButton').addEventListener('click', triggerMorph);
+            // 移除旧的 click 监听器
+            // renderer.domElement.addEventListener('click', nextShape, false);
+
+            // 新增 mousedown, mousemove, mouseup 监听器
+            renderer.domElement.addEventListener('mousedown', onDocumentMouseDown, false);
+            renderer.domElement.addEventListener('mousemove', onDocumentMouseMove, false);
+            renderer.domElement.addEventListener('mouseup', onDocumentMouseUp, false);
+
+            document.getElementById('colorButtons').addEventListener('click', (event) => {
+                currentPalette = event.target.dataset.palette;
+                applyColorPalette(currentPalette);
+                document.querySelectorAll('#colorButtons button').forEach(btn => btn.classList.remove('active'));
+                event.target.classList.add('active');
+            });
+
+            animate();
+        }
+
+        // 新增：独立的颜色计算函数
+        function calculateColors(positionsArray, bbox, paletteName, pCount, colorsObj) {
+            const calculatedColors = new Float32Array(pCount * 3);
+            const tempColor = new THREE.Color();
+
+            for (let i = 0; i < pCount; i++) {
+                const x = positionsArray[i * 3];
+                const y = positionsArray[i * 3 + 1];
+                const z = positionsArray[i * 3 + 2];
+
+                // 在实际应用前确保bbox有效
+                const normX = (bbox && bbox.max.x !== bbox.min.x) ? (x - bbox.min.x) / (bbox.max.x - bbox.min.x) : 0;
+                const normY = (bbox && bbox.max.y !== bbox.min.y) ? (y - bbox.min.y) / (bbox.max.y - bbox.min.y) : 0;
+                const normZ = (bbox && bbox.max.z !== bbox.min.z) ? (z - bbox.min.z) / (bbox.max.z - bbox.min.z) : 0;
+
+                if (paletteName === 'chinese_red') {
+                    tempColor.copy(colorsObj.chineseRed);
+                    tempColor.multiplyScalar(0.6 + normX * 0.4);
+                } else if (paletteName === 'klein_blue') {
+                    tempColor.copy(colorsObj.kleinBlue);
+                    tempColor.multiplyScalar(0.6 + normY * 0.4);
+                } else if (paletteName === 'custom_tri_color') {
+                    tempColor.r = colorsObj.chineseRed.r * normX + colorsObj.kleinBlue.r * normY + colorsObj.matchingYellow.r * normZ;
+                    tempColor.g = colorsObj.chineseRed.g * normX + colorsObj.kleinBlue.g * normY + colorsObj.matchingYellow.g * normZ;
+                    tempColor.b = colorsObj.chineseRed.b * normX + colorsObj.kleinBlue.b * normY + colorsObj.matchingYellow.b * normZ;
+                    const mag = Math.sqrt(tempColor.r * tempColor.r + tempColor.g * tempColor.g + tempColor.b * tempColor.b);
+                    if (mag > 1) {
+                        tempColor.r /= mag;
+                        tempColor.g /= mag;
+                        tempColor.b /= mag;
+                    }
+                } else { // rainbow (default)
+                    tempColor.setRGB(normX, normY, normZ);
+                }
+                calculatedColors[i * 3] = tempColor.r;
+                calculatedColors[i * 3 + 1] = tempColor.g;
+                calculatedColors[i * 3 + 2] = tempColor.b;
+            }
+            return calculatedColors;
+        }
+
+        function triggerMorph() {
+            if (isMorphing) return;
+
+            sourcePositions = particles.geometry.attributes.position.array.slice();
+            sourceColors = particles.geometry.attributes.color.array.slice(); // 保存当前颜色作为起始颜色
+
+            let availableForNext = [];
+            for (let i = 0; i < shapes.length; i++) {
+                if (!visitedShapesIndices.includes(i)) {
+                    availableForNext.push(i);
+                }
+            }
+
+            if (availableForNext.length === 0) { // All shapes visited in this cycle
+                visitedShapesIndices = []; // Reset visited list
+                // Repopulate availableForNext, excluding the current shape to avoid immediate repeat if possible
+                for (let i = 0; i < shapes.length; i++) {
+                    if (i !== currentShapeIndex) { // Try not to immediately repeat current shape after reset
+                        availableForNext.push(i);
+                    }
+                }
+                if (availableForNext.length === 0 && shapes.length > 0) { // Only one shape in total, or current is the only one left before reset
+                    availableForNext.push(currentShapeIndex); // Allow repeating if it's the only option
+                }
+            }
+            
+            if (availableForNext.length === 0) return; // Should not happen if shapes exist
+
+            const randomIndexInAvailable = Math.floor(Math.random() * availableForNext.length);
+            currentShapeIndex = availableForNext[randomIndexInAvailable];
+            
+            visitedShapesIndices.push(currentShapeIndex);
+            targetPositions = shapes[currentShapeIndex];
+
+            // 为目标形状计算其颜色，用于平滑过渡
+            const tempGeometryForColor = new THREE.BufferGeometry();
+            // 使用目标位置数组的副本，避免意外修改原始数据
+            tempGeometryForColor.setAttribute('position', new THREE.BufferAttribute(targetPositions.slice(), 3));
+            tempGeometryForColor.computeBoundingBox();
+            const targetBbox = tempGeometryForColor.boundingBox;
+            
+            targetColors = calculateColors(targetPositions, targetBbox, currentPalette, particleCount, colorConstants);
+            
+            tempGeometryForColor.dispose(); // 清理临时几何体
+
+            isMorphing = true;
+            morphProgress = 0;
+            document.getElementById('info').textContent = 'Morphing...';
+        }
+
+        function updateInfoText() {
+            document.getElementById('info').textContent = `Shape: ${shapeNames[currentShapeIndex]} (Click canvas or button to morph)`;
+        }
+
+        function getSpherePositions(count, radius) {
+            const points = new Float32Array(count * 3);
+            for (let i = 0; i < count; i++) {
+                const phi = Math.acos(-1 + (2 * i) / count);
+                const theta = Math.sqrt(count * Math.PI) * phi;
+                points[i * 3] = radius * Math.cos(theta) * Math.sin(phi);
+                points[i * 3 + 1] = radius * Math.sin(theta) * Math.sin(phi);
+                points[i * 3 + 2] = radius * Math.cos(phi);
+            }
+            return points;
+        }
+
+        function getCubePositions(count, size) {
+            const points = new Float32Array(count * 3);
+            const halfSize = size / 2;
+            for (let i = 0; i < count; i++) {
+                points[i * 3] = Math.random() * size - halfSize;
+                points[i * 3 + 1] = Math.random() * size - halfSize;
+                points[i * 3 + 2] = Math.random() * size - halfSize;
+            }
+            return points;
+        }
+
+        function getTorusPositions(count, radius, tube, radialSegments, tubularSegments) {
+            const points = new Float32Array(count * 3);
+            for (let i = 0; i < count; i++) {
+                const u = Math.random() * Math.PI * 2;
+                const v = Math.random() * Math.PI * 2;
+                points[i * 3] = (radius + tube * Math.cos(v)) * Math.cos(u);
+                points[i * 3 + 1] = (radius + tube * Math.cos(v)) * Math.sin(u);
+                points[i * 3 + 2] = tube * Math.sin(v);
+            }
+            return points;
+        }
+
+        function getPyramidPositions(count, baseSize, height) {
+            const points = new Float32Array(count * 3);
+            const halfBase = baseSize / 2;
+            for (let i = 0; i < count; i++) {
+                let y = Math.random(); // 0 (base) to 1 (apex)
+                let scaleAtY = 1 - y; // Size factor decreases with height
+                let x = (Math.random() - 0.5) * baseSize * scaleAtY;
+                let z = (Math.random() - 0.5) * baseSize * scaleAtY;
+                points[i * 3] = x;
+                points[i * 3 + 1] = y * height - height / 2; // Center pyramid vertically
+                points[i * 3 + 2] = z;
+            }
+            return points;
+        }
+
+        function getCylinderPositions(count, radius, height) {
+            const points = new Float32Array(count * 3);
+            const halfHeight = height / 2;
+            for (let i = 0; i < count; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const r = Math.sqrt(Math.random()) * radius; // sqrt for uniform distribution in disk
+                points[i * 3] = Math.cos(angle) * r;
+                points[i * 3 + 1] = Math.random() * height - halfHeight;
+                points[i * 3 + 2] = Math.sin(angle) * r;
+            }
+            return points;
+        }
+
+        function getCarPositions(particleCount, scale) {
+            const points = new Float32Array(particleCount * 3);
+            let idx = 0;
+
+            // Sportier proportions
+            const bodyRatio = 0.60; // Larger main body
+            const cabinRatio = 0.18; // Smaller, sleeker cabin
+            const wheelRatio = 0.055; // 4 wheels, so 0.22 total
+
+            // Dimensions (scaled) - Adjusted for a sportier look
+            const carLength = 4.5 * scale;
+            const carWidth = 2.0 * scale;
+            const carHeightOverall = 1.2 * scale; // Lower overall height
+
+            const bodyLength = carLength;
+            const bodyWidth = carWidth;
+            const bodyHeight = carHeightOverall * 0.6; // Main body is a significant part of height
+            
+            const cabinLength = carLength * 0.45;
+            const cabinWidth = carWidth * 0.85;
+            const cabinHeight = carHeightOverall * 0.4; // Cabin is lower
+
+            const wheelRadius = carHeightOverall * 0.3; // Relatively larger wheels
+            const wheelThickness = carWidth * 0.15;
+
+            const cabinOffsetX = carLength * 0.1; // Cabin shifted slightly back
+
+            // Body (low and wide)
+            const numBodyParticles = Math.floor(particleCount * bodyRatio);
+            const bodyCenterY = wheelRadius - bodyHeight * 0.3; // Lower center for body
+            for (let i = 0; i < numBodyParticles; i++) {
+                points[idx++] = (Math.random() - 0.5) * bodyLength;
+                points[idx++] = (Math.random() - 0.5) * bodyHeight + bodyCenterY;
+                points[idx++] = (Math.random() - 0.5) * bodyWidth;
+            }
+
+            // Cabin (sleek, lower, and set back)
+            const numCabinParticles = Math.floor(particleCount * cabinRatio);
+            const cabinCenterY = bodyCenterY + bodyHeight / 2 + cabinHeight / 2 - carHeightOverall * 0.1; // Lower cabin
+            for (let i = 0; i < numCabinParticles; i++) {
+                // Taper the cabin for a sportier look (front narrower than back)
+                let zFactor = (points[idx] + cabinLength / 2) / cabinLength; // 0 at back, 1 at front
+                let currentCabinWidth = cabinWidth * (1 - zFactor * 0.3); // Front is 70% of back width
+
+                points[idx++] = (Math.random() - 0.5) * cabinLength - cabinOffsetX;
+                points[idx++] = (Math.random() - 0.5) * cabinHeight + cabinCenterY;
+                points[idx++] = (Math.random() - 0.5) * currentCabinWidth;
+            }
+            
+            // Wheels (4)
+            const numParticlesPerWheel = Math.floor(particleCount * wheelRatio);
+            const wheelPositions = [
+                { x: carLength * 0.38, z: bodyWidth / 2 - wheelThickness * 0.3, y: wheelRadius }, // Front right
+                { x: carLength * 0.38, z: -(bodyWidth / 2 - wheelThickness * 0.3), y: wheelRadius }, // Front left
+                { x: -carLength * 0.38, z: bodyWidth / 2 - wheelThickness * 0.3, y: wheelRadius }, // Rear right
+                { x: -carLength * 0.38, z: -(bodyWidth / 2 - wheelThickness * 0.3), y: wheelRadius }  // Rear left
+            ];
+
+            for (const pos of wheelPositions) {
+                for (let i = 0; i < numParticlesPerWheel && idx < particleCount * 3; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    // Distribute points more towards the surface of the cylinder for a better wheel shape
+                    const rFactor = Math.random() * 0.2 + 0.8; // 80% to 100% of radius
+                    const r = rFactor * wheelRadius;
+                    
+                    const yOffset = Math.sin(angle) * r;
+                    const zOffsetInWheel = Math.cos(angle) * r; // This is along wheel's own Z, effectively radius
+
+                    points[idx++] = pos.x + (Math.random() - 0.5) * wheelThickness; // Wheel thickness along car's X
+                    points[idx++] = yOffset + pos.y; // Centered at wheelRadius height
+                    points[idx++] = pos.z + zOffsetInWheel;
+                }
+            }
+
+            // Fill remaining particles (if any) into the main body
+            while (idx < particleCount * 3) {
+                points[idx++] = (Math.random() - 0.5) * bodyLength;
+                points[idx++] = (Math.random() - 0.5) * bodyHeight + bodyCenterY;
+                points[idx++] = (Math.random() - 0.5) * bodyWidth;
+            }
+            return points;
+        }
+
+        function getConePositions(count, radius, height) {
+            const points = new Float32Array(count * 3);
+            const halfHeight = height / 2;
+            for (let i = 0; i < count; i++) {
+                // y goes from -halfHeight (apex) to halfHeight (base)
+                // To make apex pointy and base circular, we can use a random y
+                // and scale radius from 0 at apex to full radius at base.
+                const y = (Math.random() * height) - halfHeight;
+                // The radius at this y level.
+                // When y = -halfHeight (apex), currentRadius = 0
+                // When y = halfHeight (base), currentRadius = radius
+                const ratio = (y + halfHeight) / height;
+                const currentRadius = radius * ratio;
+
+                const angle = Math.random() * Math.PI * 2;
+                const r = Math.sqrt(Math.random()) * currentRadius; // Distribute points within the circle at this y
+
+                points[i * 3] = Math.cos(angle) * r;
+                points[i * 3 + 1] = y;
+                points[i * 3 + 2] = Math.sin(angle) * r;
+            }
+            return points;
+        }
+
+        function getHelixPositions(count, radius, height, coils, coilThickness) {
+            const points = new Float32Array(count * 3);
+            const halfHeight = height / 2;
+            for (let i = 0; i < count; i++) {
+                // t goes from 0 to 1, representing progress along the main helix spine
+                const t = Math.random(); 
+                const angle = t * Math.PI * 2 * coils; // Angle along the main helix spine
+
+                // Offset within the coil's thickness
+                const u = Math.random() * Math.PI * 2; // Angle for point on the coil's cross-section
+                const v = Math.random(); // Distance from center of coil (0 to 1)
+                const rOffset = Math.sqrt(v) * coilThickness / 2; // sqrt for better distribution in circle
+
+                points[i * 3] = (radius + Math.cos(u) * rOffset) * Math.cos(angle);
+                points[i * 3 + 1] = t * height - halfHeight; // Linear progression in Y
+                points[i * 3 + 2] = (radius + Math.cos(u) * rOffset) * Math.sin(angle);
+            }
+            return points;
+        }
+
+        function getCapsulePositions(count, radius, height) {
+            const points = new Float32Array(count * 3);
+            const cylinderHeight = height - 2 * radius; // Height of the cylindrical part
+            const halfCylinderHeight = cylinderHeight / 2;
+            let idx = 0;
+
+            // Distribute points among cylinder and two hemispheres
+            // Allocate particles proportionally to the surface area (approximate)
+            const surfaceAreaCylinder = 2 * Math.PI * radius * cylinderHeight;
+            const surfaceAreaSphere = 4 * Math.PI * radius * radius; // Full sphere, we have two half-spheres
+            const totalSurfaceArea = surfaceAreaCylinder + surfaceAreaSphere;
+
+            const cylinderParticles = Math.floor(count * (surfaceAreaCylinder / totalSurfaceArea));
+            const hemisphereParticles = Math.floor(count * (surfaceAreaSphere / 2 / totalSurfaceArea)); // For one hemisphere
+            const remainingParticles = count - cylinderParticles - 2 * hemisphereParticles;
+
+            // Particles for the cylindrical part
+            for (let i = 0; i < cylinderParticles; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                points[idx * 3] = Math.cos(angle) * radius;
+                points[idx * 3 + 1] = (Math.random() - 0.5) * cylinderHeight;
+                points[idx * 3 + 2] = Math.sin(angle) * radius;
+                idx++;
+            }
+
+            // Particles for the top hemisphere
+            for (let i = 0; i < hemisphereParticles; i++) {
+                const phi = Math.acos(1 - Math.random()); // 0 to PI/2 for top hemisphere
+                const theta = Math.random() * Math.PI * 2;
+                points[idx * 3] = radius * Math.sin(phi) * Math.cos(theta);
+                points[idx * 3 + 1] = radius * Math.cos(phi) + halfCylinderHeight;
+                points[idx * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
+                idx++;
+            }
+
+            // Particles for the bottom hemisphere
+            for (let i = 0; i < hemisphereParticles; i++) {
+                const phi = Math.acos(Math.random()); // PI/2 to PI for bottom hemisphere (acos gives 0 to PI, random maps to 0 to 1)
+                                                      // We want y to be negative, so cos(phi) should be negative.
+                                                      // phi should be between PI/2 and PI.
+                                                      // Math.acos(Math.random() -1 ) would give PI/2 to PI if Math.random() is 0 to 1.
+                                                      // simpler: Math.acos(1 - Math.random()) gives 0 to PI/2 for top, so use -cos(phi) for bottom y
+                const phi_bottom = Math.acos(1 - Math.random()); // Gives 0 to PI/2
+                const theta = Math.random() * Math.PI * 2;
+                points[idx * 3] = radius * Math.sin(phi_bottom) * Math.cos(theta);
+                points[idx * 3 + 1] = -radius * Math.cos(phi_bottom) - halfCylinderHeight;
+                points[idx * 3 + 2] = radius * Math.sin(phi_bottom) * Math.sin(theta);
+                idx++;
+            }
+            
+            // Fill remaining particles (if any) into the cylinder part as a fallback
+            for (let i = 0; i < remainingParticles && idx < count; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                points[idx * 3] = Math.cos(angle) * radius;
+                points[idx * 3 + 1] = (Math.random() - 0.5) * cylinderHeight;
+                points[idx * 3 + 2] = Math.sin(angle) * radius;
+                idx++;
+            }
+
+            return points;
+        }
+
+        function getHeart3DPositions(count, scale) {
+            const points = new Float32Array(count * 3);
+            for (let i = 0; i < count; i++) {
+                let x, y, z;
+                let valid = false;
+                while(!valid) {
+                    // Parametric equation for a heart shape can be complex.
+                    // We can use a simpler approach by sampling points within a bounding box
+                    // and checking if they satisfy the heart equation: (x^2 + (9/4)y^2 + z^2 - 1)^3 - x^2*z^3 - (9/80)y^2*z^3 <= 0
+                    // This is computationally intensive for many points. A common way is to use rejection sampling
+                    // on a known parametric surface or a simpler implicit surface.
+
+                    // Simpler approach for a stylized 3D heart:
+                    // Combine two offset spheres and a cone/rounded bottom part.
+                    // Or, use a 2D heart equation and give it some depth.
+                    
+                    // Let's use a common parametric equation for a 3D heart-like surface:
+                    const t = Math.random() * Math.PI * 2; // Angle from 0 to 2PI
+                    const p = Math.random() * 2 -1; // parameter p for height/depth variation, from -1 to 1
+
+                    x = scale * 1.2 * Math.sin(t) * (1 - Math.abs(p)); // Make it wider
+                    y = scale * (1.25 * Math.cos(t) - 0.5 * Math.cos(2*t) - 0.2 * Math.cos(3*t) - 0.1 * Math.cos(4*t) + 0.5 * Math.abs(p));
+                    z = scale * 0.75 * p; // Depth
+                    
+                    // Adjust y to center the heart better if needed, and to make it point upwards
+                    y = y - scale * 0.3; // Lower the heart a bit
+
+                    // A slightly different, perhaps more common parametric for a simpler heart:
+                    const u = Math.random() * Math.PI; // 0 to PI for one side, then reflect or use 0 to 2PI
+                    const v_angle = Math.random() * Math.PI * 2; // for the thickness/roundness
+                    const v_radius_factor = Math.random();
+
+                    const heart_x = scale * 0.1 * (16 * Math.pow(Math.sin(u), 3));
+                    const heart_y = scale * 0.1 * (13 * Math.cos(u) - 5 * Math.cos(2*u) - 2 * Math.cos(3*u) - Math.cos(4*u));
+                    
+                    // Give it some 3D volume by adding a random z offset based on v
+                    // This is a very basic way to make it 3D, not a true volumetric heart.
+                    // To make it look more voluminous, points should be on the surface of a thickened 2D heart.
+                    
+                    // Let's try another approach using a cardioid in cylindrical coordinates and adding depth.
+                    // x = r cos(theta), z = r sin(theta), y is independent for extrusion or could be part of parametric.
+                    // r = a(1 - cos(theta)) is a 2D cardioid in polar coordinates (x,y plane).
+                    // Let's use x,y plane for the heart shape and z for depth.
+
+                    const theta = Math.random() * Math.PI * 2;
+                    const base_r = scale * (1 - Math.cos(theta)); // Cardioid formula for radius in x-y plane
+                    
+                    // To give it volume, we can sample points on the surface of this extruded cardioid
+                    // or fill it. For a filled look, we can vary the radius.
+                    const r_multiplier = Math.sqrt(Math.random()); // To fill the shape, sqrt for better distribution
+
+                    x = r_multiplier * base_r * Math.cos(theta);
+                    y = r_multiplier * base_r * Math.sin(theta) + scale * 0.8; // Y offset to make it upright
+                    
+                    // For Z, we can make it taper, like two spheres merging at the bottom and wider at top cleft
+                    // A simpler approach is to give it a random depth within a range
+                    z = (Math.random() - 0.5) * scale * 0.7; // Give some thickness
+                    
+                    // Final adjustment to make it look more like a typical heart shape
+                    // The previous cardioid is sideways. Let's try the standard heart equation in x,y
+                    // x = a * sin(t)^3
+                    // y = a * (cos(t) - cos(2t)/2 - cos(3t)/3 - cos(4t)/4)
+                    // This isn't standard, a more common one for 2D plotting is x=16sin^3t, y=13cost-5cos2t-2cos3t-cost4t
+
+                    // Let's use the popular parametric equation for a 2D heart and give it depth:
+                    const t_heart = Math.random() * Math.PI * 2; // parameter t for the 2D heart curve
+                    const s = scale * 0.12; // scale factor for this specific equation
+
+                    x = s * (16 * Math.pow(Math.sin(t_heart), 3));
+                    y = s * (13 * Math.cos(t_heart) - 5 * Math.cos(2 * t_heart) - 2 * Math.cos(3 * t_heart) - Math.cos(4 * t_heart));
+                    
+                    // Add depth and some variation to make it 3D
+                    // We can vary z randomly or make it bulge
+                    // For a simple filled heart, random z within a thickness
+                    const max_depth_factor = 0.6 + 0.4 * Math.sin(t_heart + Math.PI/2); // Make it bulge in the middle along t
+                    z = (Math.random() - 0.5) * scale * 1.8 * max_depth_factor; // Increased depth factor significantly
+
+                    // Adjust y to be upright and centered
+                    y = -y; // Flip it upright
+                    y = y + scale * 1.5; // Center it vertically a bit higher
+                    valid = true; // For this method, all generated points are part of the shape
+                }
+                points[i * 3] = x;
+                points[i * 3 + 1] = y;
+                points[i * 3 + 2] = z;
+            }
+            return points;
+        }
+
+        function getStar3DPositions(count, scale, numPoints, thicknessFactor) {
+            const points = new Float32Array(count * 3);
+            const innerRadius = scale * 0.5; // Inner radius of the star (where points meet)
+            const outerRadius = scale;     // Outer radius of the star (tips of the points)
+
+            for (let i = 0; i < count; i++) {
+                let x, y, z;
+
+                // Choose an angle, this determines which "wedge" of the star we are in
+                const angle = Math.random() * Math.PI * 2;
+                
+                // Determine if the point is in an outer tip or an inner valley based on the angle
+                // And interpolate radius between innerRadius and outerRadius
+                const segment = Math.PI * 2 / numPoints;
+                const halfSegment = segment / 2;
+                const currentSegmentAngle = (angle % segment) - halfSegment; // Angle within current segment (-halfSeg to +halfSeg)
+
+                // Use a smooth interpolation for radius, could also be linear
+                // This makes the star points a bit more rounded/smoothly connected
+                const t = Math.abs(currentSegmentAngle) / halfSegment; // 0 at point tip/valley center, 1 at edge
+                const currentRadius = THREE.MathUtils.lerp(outerRadius, innerRadius, t);
+                
+                // Give it a random radius within this interpolated value to fill the star
+                const r = Math.sqrt(Math.random()) * currentRadius;
+
+                x = r * Math.cos(angle);
+                y = r * Math.sin(angle);
+                
+                // Give it depth/thickness
+                // Make the thickness taper towards the tips for a more star-like look
+                // The closer to outerRadius (tip), the thinner it gets in Z
+                const zThickness = scale * thicknessFactor * (1 - (r / outerRadius) * 0.7); // Thinner at tips
+                z = (Math.random() - 0.5) * zThickness;
+
+                points[i * 3] = x;
+                points[i * 3 + 1] = y;
+                points[i * 3 + 2] = z;
+            }
+            return points;
+        }
+
+        function getTorusKnotPositions(count, radius, tube, tubularSegments, radialSegments, p, q) {
+            const points = new Float32Array(count * 3);
+            const tempVec = new THREE.Vector3();
+            const tempNormal = new THREE.Vector3();
+
+            // Create a TorusKnot geometry to sample points from its surface
+            // This is much easier than calculating points on the surface manually for complex shapes
+            const geometry = new THREE.TorusKnotGeometry(radius, tube, Math.floor(tubularSegments), Math.floor(radialSegments), p, q);
+            
+            // We need to access vertex positions. 
+            // If the geometry is non-indexed, position attribute is straightforward.
+            // If indexed, we'd need to use the index.
+            // TorusKnotGeometry is typically non-indexed for its raw vertex data.
+            const positions = geometry.attributes.position.array;
+            const numVertices = positions.length / 3;
+
+            for (let i = 0; i < count; i++) {
+                // Randomly pick a vertex from the TorusKnot geometry
+                // To get a good distribution on the surface, it's better to pick a random face
+                // and then a random point on that face. But for particles, random vertex picking is often sufficient.
+                const randomIndex = Math.floor(Math.random() * numVertices);
+                const vertexStartIndex = randomIndex * 3;
+                
+                // To get points *inside* the tube of the knot, we can take a surface point
+                // and then offset it randomly inwards along its normal, or just slightly randomly.
+                // For now, let's try to get points on or very near the surface.
+                
+                // A simple way to get points *within* the tube is to scale the chosen vertex slightly.
+                // However, a better approach for filling the volume of the tube is to generate points
+                // parametrically for the tube around the knot's path.
+
+                // Let's use the parametric approach for filling the tube:
+                const u = Math.random() * Math.PI * 2; // Angle for the main path of the knot
+                const v = Math.random() * Math.PI * 2; // Angle for the cross-section of the tube
+                const randomTubeRadius = Math.sqrt(Math.random()) * tube; // sqrt for uniform dist within the tube
+
+                // Get point on the centerline of the TorusKnot
+                const P = new THREE.Vector3();
+                const A = (p * u);
+                const B = (q * u);
+                P.x = (radius + tube * Math.cos(B)) * Math.cos(A); // Main radius + tube radius influence along knot path
+                P.y = (radius + tube * Math.cos(B)) * Math.sin(A);
+                P.z = tube * Math.sin(B);
+                
+                // To get a point on the centerline (this is not quite right, the above is already on surface)
+                // Correct parametric equations for a point on the centerline of a torus knot:
+                // x(u) = cos(qu) * (r_torus + r_tube * cos(pu))
+                // y(u) = sin(qu) * (r_torus + r_tube * cos(pu))
+                // z(u) = -r_tube * sin(pu)
+                // This is for a (p,q)-torus knot. Three.js uses slightly different parameterization for its geometry generation.
+
+                // Let's use the Three.js internal method of getting a point on the curve for the knot:
+                // The TorusKnotGeometry internally calculates these. We can simulate picking a point along the curve
+                // and then a point in the tube around it.
+
+                // Sample `u` (angle along the main curve of the knot, from 0 to 2PI)
+                const mainAngle = Math.random() * Math.PI * 2;
+                // Sample `v` (angle around the tube, from 0 to 2PI)
+                const tubeAngle = Math.random() * Math.PI * 2;
+                // Sample a random radius within the tube
+                const tubeR = Math.sqrt(Math.random()) * tube;
+
+                // Position on the core (centerline) of the torus knot
+                // (from an external source for (p,q) torus knot parametric equation)
+                const r_core = radius; // radius of the torus itself
+                const x_core = (r_core + tubeR * Math.cos(p * mainAngle)) * Math.cos(q * mainAngle);
+                const y_core = (r_core + tubeR * Math.cos(p * mainAngle)) * Math.sin(q * mainAngle);
+                const z_core = tubeR * Math.sin(p * mainAngle);
+                
+                // This is becoming complex to ensure it matches the visual of Three.js TorusKnot.
+                // An easier way for particle filling is to take THREE.TorusKnotGeometry,
+                // then for each particle, pick two random vertices from the geometry and lerp between them.
+                // Or, pick a random face and then a random barycentric coordinate within that face.
+                
+                // Let's simplify: pick a random vertex, then add a small random offset.
+                // This won't perfectly fill the volume but gives a shape resembling the knot.
+                if (numVertices > 0) {
+                    const rIndex = Math.floor(Math.random() * numVertices);
+                    const vStartIndex = rIndex * 3;
+                    
+                    tempVec.set(positions[vStartIndex], positions[vStartIndex+1], positions[vStartIndex+2]);
+                    
+                    // Add a small random displacement to fill out the volume a bit
+                    // The displacement should ideally be somewhat along the normal or within the tube.
+                    // For simplicity, a small spherical random offset:
+                    const offsetScale = tube * 0.5 * Math.random(); // Max offset up to half tube radius
+                    tempNormal.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize().multiplyScalar(offsetScale);
+                    tempVec.add(tempNormal);
+
+                    points[i * 3]     = tempVec.x;
+                    points[i * 3 + 1] = tempVec.y;
+                    points[i * 3 + 2] = tempVec.z;
+                } else {
+                    // Fallback if geometry has no vertices (should not happen with TorusKnot)
+                    points[i * 3] = points[i * 3 + 1] = points[i * 3 + 2] = 0;
+                }
+            }
+            geometry.dispose(); // IMPORTANT: Clean up the temporary geometry
+            return points;
+        }
+
+        function getDodecahedronPositions(count, radius) {
+            const points = new Float32Array(count * 3);
+            const geometry = new THREE.DodecahedronGeometry(radius, 2); // Increased detail for better fill
+            const positions = geometry.attributes.position.array;
+            const numVertices = positions.length / 3;
+            const tempVec = new THREE.Vector3();
+
+            for (let i = 0; i < count; i++) {
+                // For a filled look, we can pick a random vertex and scale it by a random factor (0 to 1)
+                // Or, pick 3 random vertices to form a face (or part of it) and find a random point within.
+                // Or simpler: pick a random vertex and add a small random offset.
+                
+                // Simpler approach: pick a random vertex from the geometry (which are on the surface)
+                // and then scale it randomly towards the center to get points inside.
+                if (numVertices > 0) {
+                    const randomIndex = Math.floor(Math.random() * numVertices);
+                    const vertexStartIndex = randomIndex * 3;
+                    tempVec.set(positions[vertexStartIndex], positions[vertexStartIndex + 1], positions[vertexStartIndex + 2]);
+                    
+                    // Scale the vertex by a random factor (cubed for better distribution towards surface)
+                    const scaleFactor = Math.pow(Math.random(), 1/3);
+                    tempVec.multiplyScalar(scaleFactor);
+                    
+                    points[i * 3]     = tempVec.x;
+                    points[i * 3 + 1] = tempVec.y;
+                    points[i * 3 + 2] = tempVec.z;
+                } else {
+                    points[i * 3] = points[i * 3 + 1] = points[i * 3 + 2] = 0;
+                }
+            }
+            geometry.dispose();
+            return points;
+        }
+
+        function getIcosahedronPositions(count, radius) {
+            const points = new Float32Array(count * 3);
+            const geometry = new THREE.IcosahedronGeometry(radius, 2); // Increased detail for better fill
+            const positions = geometry.attributes.position.array;
+            const numVertices = positions.length / 3;
+            const tempVec = new THREE.Vector3();
+
+            for (let i = 0; i < count; i++) {
+                if (numVertices > 0) {
+                    const randomIndex = Math.floor(Math.random() * numVertices);
+                    const vertexStartIndex = randomIndex * 3;
+                    tempVec.set(positions[vertexStartIndex], positions[vertexStartIndex + 1], positions[vertexStartIndex + 2]);
+                    
+                    // Scale the vertex by a random factor (cubed for better distribution towards surface)
+                    const scaleFactor = Math.pow(Math.random(), 1/3); // Cube root for uniform volume distribution
+                    tempVec.multiplyScalar(scaleFactor);
+                    
+                    points[i * 3]     = tempVec.x;
+                    points[i * 3 + 1] = tempVec.y;
+                    points[i * 3 + 2] = tempVec.z;
+                } else {
+                    points[i * 3] = points[i * 3 + 1] = points[i * 3 + 2] = 0;
+                }
+            }
+            geometry.dispose();
+            return points;
+        }
+
+        function getPlanePositions(count, width, height) {
+            const points = new Float32Array(count * 3);
+            const halfWidth = width / 2;
+            const halfHeight = height / 2;
+            for (let i = 0; i < count; i++) {
+                points[i * 3]     = (Math.random() - 0.5) * width;
+                points[i * 3 + 1] = (Math.random() - 0.5) * height;
+                points[i * 3 + 2] = 0; // All points on the z=0 plane
+            }
+            return points;
+        }
+
+        function getOctahedronPositions(count, radius) {
+            const points = new Float32Array(count * 3);
+            const geometry = new THREE.OctahedronGeometry(radius, 2); // Increased detail for better fill
+            const positions = geometry.attributes.position.array;
+            const numVertices = positions.length / 3;
+            const tempVec = new THREE.Vector3();
+
+            for (let i = 0; i < count; i++) {
+                if (numVertices > 0) {
+                    const randomIndex = Math.floor(Math.random() * numVertices);
+                    const vertexStartIndex = randomIndex * 3;
+                    tempVec.set(positions[vertexStartIndex], positions[vertexStartIndex + 1], positions[vertexStartIndex + 2]);
+                    
+                    // Scale the vertex by a random factor (cubed for better distribution towards surface)
+                    const scaleFactor = Math.pow(Math.random(), 1/3); // Cube root for uniform volume distribution
+                    tempVec.multiplyScalar(scaleFactor);
+                    
+                    points[i * 3]     = tempVec.x;
+                    points[i * 3 + 1] = tempVec.y;
+                    points[i * 3 + 2] = tempVec.z;
+                } else {
+                    points[i * 3] = points[i * 3 + 1] = points[i * 3 + 2] = 0;
+                }
+            }
+            geometry.dispose();
+            return points;
+        }
+
+        function applyColorPalette(paletteName) {
+            const colorsAttribute = particles.geometry.attributes.color;
+            const positionsAttribute = particles.geometry.attributes.position;
+
+            // 确保在计算颜色前，粒子几何体有有效的边界框
+            if (!particles.geometry.boundingBox) {
+                particles.geometry.computeBoundingBox();
+            }
+            const bbox = particles.geometry.boundingBox;
+
+            const newColorsArray = calculateColors(positionsAttribute.array, bbox, paletteName, particleCount, colorConstants);
+
+            for (let i = 0; i < particleCount * 3; i++) {
+                colorsAttribute.array[i] = newColorsArray[i];
+            }
+            colorsAttribute.needsUpdate = true;
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+
+            if (isMorphing) {
+                morphProgress++;
+                const t = THREE.MathUtils.smootherstep(morphProgress / morphDuration, 0, 1);
+
+                const currentPosAttribute = particles.geometry.attributes.position;
+                const currentColorAttribute = particles.geometry.attributes.color; // 获取颜色属性
+
+                for (let i = 0; i < particleCount; i++) {
+                    const idx = i * 3;
+                    // 位置插值
+                    currentPosAttribute.array[idx] = THREE.MathUtils.lerp(sourcePositions[idx], targetPositions[idx], t);
+                    currentPosAttribute.array[idx + 1] = THREE.MathUtils.lerp(sourcePositions[idx + 1], targetPositions[idx + 1], t);
+                    currentPosAttribute.array[idx + 2] = THREE.MathUtils.lerp(sourcePositions[idx + 2], targetPositions[idx + 2], t);
+
+                    // 颜色插值
+                    if (sourceColors && targetColors) { //确保颜色数组存在
+                        currentColorAttribute.array[idx] = THREE.MathUtils.lerp(sourceColors[idx], targetColors[idx], t);
+                        currentColorAttribute.array[idx + 1] = THREE.MathUtils.lerp(sourceColors[idx + 1], targetColors[idx + 1], t);
+                        currentColorAttribute.array[idx + 2] = THREE.MathUtils.lerp(sourceColors[idx + 2], targetColors[idx + 2], t);
+                    }
+                }
+                currentPosAttribute.needsUpdate = true;
+                currentColorAttribute.needsUpdate = true; // 标记颜色属性也需要更新
+
+                if (morphProgress >= morphDuration) {
+                    isMorphing = false;
+                    updateInfoText();
+                    // 变形结束后，直接将插值的最终目标颜色赋给粒子，确保平滑过渡的终点就是最终状态
+                    if (targetColors) { // 确保 targetColors存在
+                        for (let i = 0; i < particleCount * 3; i++) {
+                            currentColorAttribute.array[i] = targetColors[i];
+                        }
+                        currentColorAttribute.needsUpdate = true; // 再次标记更新，确保精确赋值生效
+                    } else {
+                        // 如果 targetColors由于某种原因不存在，作为回退，还是调用 applyColorPalette
+                        applyColorPalette(currentPalette);
+                    }
+                }
+            }
+            particles.rotation.y += 0.0005;
+
+            renderer.render(scene, camera);
+        }
+
+        // 新增：鼠标事件处理函数
+        function onDocumentMouseDown(event) {
+            isDragging = false;
+        }
+
+        function onDocumentMouseMove(event) {
+            isDragging = true;
+        }
+
+        function onDocumentMouseUp(event) {
+            if (!isDragging) {
+                triggerMorph();
+            }
+            isDragging = false; // 重置状态
+        }
+
+        init();
+    </script>
+</body>
+</html>
